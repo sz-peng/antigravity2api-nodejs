@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateAssistantResponse, getAvailableModels } from '../api/client.js';
+import { generateAssistantResponse, generateAssistantResponseNoStream, getAvailableModels, closeRequester } from '../api/client.js';
 import { generateRequestBody } from '../utils/utils.js';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
@@ -99,17 +99,9 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.write('data: [DONE]\n\n');
       res.end();
     } else {
-      let fullContent = '';
-      let toolCalls = [];
-      await generateAssistantResponse(requestBody, (data) => {
-        if (data.type === 'tool_calls') {
-          toolCalls = data.tool_calls;
-        } else {
-          fullContent += data.content;
-        }
-      });
+      const { content, toolCalls } = await generateAssistantResponseNoStream(requestBody);
       
-      const message = { role: 'assistant', content: fullContent };
+      const message = { role: 'assistant', content };
       if (toolCalls.length > 0) {
         message.tool_calls = toolCalls;
       }
@@ -152,7 +144,17 @@ app.post('/v1/chat/completions', async (req, res) => {
         res.write('data: [DONE]\n\n');
         res.end();
       } else {
-        res.status(500).json({ error: error.message });
+        res.json({
+          id: `chatcmpl-${Date.now()}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content: `错误: ${error.message}` },
+            finish_reason: 'stop'
+          }]
+        });
       }
     }
   }
@@ -177,6 +179,7 @@ server.on('error', (error) => {
 
 const shutdown = () => {
   logger.info('正在关闭服务器...');
+  closeRequester();
   server.close(() => {
     logger.info('服务器已关闭');
     process.exit(0);
