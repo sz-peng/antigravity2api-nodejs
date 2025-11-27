@@ -1,21 +1,6 @@
 import tokenManager from '../auth/token_manager.js';
 import config from '../config/config.js';
 import { generateToolCallId } from '../utils/idGenerator.js';
-import AntigravityRequester from '../AntigravityRequester.js';
-
-let requester = null;
-let useNativeFetch = false;
-
-if (config.useNativeFetch !== true) {
-  try {
-    requester = new AntigravityRequester();
-  } catch (error) {
-    console.warn('AntigravityRequester initialization failed, falling back to native fetch:', error.message);
-    useNativeFetch = true;
-  }
-} else {
-  useNativeFetch = true;
-}
 
 export async function generateAssistantResponse(requestBody, callback) {
   const token = await tokenManager.getToken();
@@ -25,104 +10,86 @@ export async function generateAssistantResponse(requestBody, callback) {
   }
   
   const url = config.api.url;
-  const headers = {
-    'Host': config.api.host,
-    'User-Agent': config.api.userAgent,
-    'Authorization': `Bearer ${token.access_token}`,
-    'Content-Type': 'application/json',
-    'Accept-Encoding': 'gzip'
-  };
   
-  if (useNativeFetch) {
-    return await generateWithNativeFetch(url, headers, requestBody, callback, token);
-  }
-  
-  const streamResponse = requester.antigravity_fetchStream(url, {
+  const response = await fetch(url, {
     method: 'POST',
-    headers,
+    headers: {
+      'Host': config.api.host,
+      'User-Agent': config.api.userAgent,
+      'Authorization': `Bearer ${token.access_token}`,
+      'Content-Type': 'application/json',
+      'Accept-Encoding': 'gzip'
+    },
     body: JSON.stringify(requestBody)
   });
 
+  if (!response.ok) {
+    const errorText = await response.text();
+    if (response.status === 403) {
+      tokenManager.disableCurrentToken(token);
+      throw new Error(`该账号没有使用权限，已自动禁用。错误详情: ${errorText}`);
+    }
+    throw new Error(`API请求失败 (${response.status}): ${errorText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
   let thinkingStarted = false;
   let toolCalls = [];
-  let buffer = '';
-  let errorBody = '';
-  let statusCode = null;
 
-  await new Promise((resolve, reject) => {
-    streamResponse
-      .onStart(({ status }) => {
-        statusCode = status;
-        if (status === 403) {
-          tokenManager.disableCurrentToken(token);
-        }
-      })
-      .onData((chunk) => {
-        if (statusCode !== 200) {
-          errorBody += chunk;
-          return;
-        }
-        
-        buffer += chunk;
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        
-        for (const line of lines.filter(l => l.startsWith('data: '))) {
-          const jsonStr = line.slice(6);
-          try {
-            const data = JSON.parse(jsonStr);
-            const parts = data.response?.candidates?.[0]?.content?.parts;
-            if (parts) {
-              for (const part of parts) {
-                if (part.thought === true) {
-                  if (!thinkingStarted) {
-                    callback({ type: 'thinking', content: '<think>\n' });
-                    thinkingStarted = true;
-                  }
-                  callback({ type: 'thinking', content: part.text || '' });
-                } else if (part.text !== undefined) {
-                  if (thinkingStarted) {
-                    callback({ type: 'thinking', content: '\n</think>\n' });
-                    thinkingStarted = false;
-                  }
-                  callback({ type: 'text', content: part.text });
-                } else if (part.functionCall) {
-                  toolCalls.push({
-                    id: part.functionCall.id || generateToolCallId(),
-                    type: 'function',
-                    function: {
-                      name: part.functionCall.name,
-                      arguments: JSON.stringify(part.functionCall.args)
-                    }
-                  });
-                }
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    
+    const chunk = decoder.decode(value);
+    const lines = chunk.split('\n').filter(line => line.startsWith('data: '));
+    
+    for (const line of lines) {
+      const jsonStr = line.slice(6);
+      try {
+        const data = JSON.parse(jsonStr);
+        const parts = data.response?.candidates?.[0]?.content?.parts;
+        if (parts) {
+          for (const part of parts) {
+            if (part.thought === true) {
+              if (!thinkingStarted) {
+                callback({ type: 'thinking', content: '<think>\n' });
+                thinkingStarted = true;
               }
-            }
-            
-            if (data.response?.candidates?.[0]?.finishReason && toolCalls.length > 0) {
+              callback({ type: 'thinking', content: part.text || '' });
+            } else if (part.text !== undefined) {
               if (thinkingStarted) {
                 callback({ type: 'thinking', content: '\n</think>\n' });
                 thinkingStarted = false;
               }
-              callback({ type: 'tool_calls', tool_calls: toolCalls });
-              toolCalls = [];
+              callback({ type: 'text', content: part.text });
+            } else if (part.functionCall) {
+              toolCalls.push({
+                id: part.functionCall.id || generateToolCallId(),
+                type: 'function',
+                function: {
+                  name: part.functionCall.name,
+                  arguments: JSON.stringify(part.functionCall.args)
+                }
+              });
             }
-          } catch (e) {
-            // 忽略解析错误
           }
         }
-      })
-      .onEnd(() => {
-        if (statusCode === 403) {
-          reject(new Error(`该账号没有使用权限，已自动禁用。错误详情: ${errorBody}`));
-        } else if (statusCode !== 200) {
-          reject(new Error(`API请求失败 (${statusCode}): ${errorBody}`));
-        } else {
-          resolve();
+        
+        // 当遇到 finishReason 时，发送所有收集的工具调用
+        if (data.response?.candidates?.[0]?.finishReason && toolCalls.length > 0) {
+          if (thinkingStarted) {
+            callback({ type: 'thinking', content: '\n</think>\n' });
+            thinkingStarted = false;
+          }
+          callback({ type: 'tool_calls', tool_calls: toolCalls });
+          toolCalls = [];
         }
-      })
-      .onError(reject);
-  });
+      } catch (e) {
+        // 忽略解析错误
+      }
+    }
+  }
 }
 
 export async function getAvailableModels() {
@@ -155,87 +122,4 @@ export async function getAvailableModels() {
       owned_by: 'google'
     }))
   };
-}
-
-async function generateWithNativeFetch(url, headers, requestBody, callback, token) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(requestBody)
-  });
-
-  if (response.status === 403) {
-    tokenManager.disableCurrentToken(token);
-    throw new Error('该账号没有使用权限，已自动禁用');
-  }
-
-  if (!response.ok) {
-    throw new Error(`API请求失败 (${response.status})`);
-  }
-
-  let thinkingStarted = false;
-  let toolCalls = [];
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-
-    for (const line of lines.filter(l => l.startsWith('data: '))) {
-      const jsonStr = line.slice(6);
-      try {
-        const data = JSON.parse(jsonStr);
-        const parts = data.response?.candidates?.[0]?.content?.parts;
-        if (parts) {
-          for (const part of parts) {
-            if (part.thought === true) {
-              if (!thinkingStarted) {
-                callback({ type: 'thinking', content: '<think>\n' });
-                thinkingStarted = true;
-              }
-              callback({ type: 'thinking', content: part.text || '' });
-            } else if (part.text !== undefined) {
-              if (thinkingStarted) {
-                callback({ type: 'thinking', content: '\n</think>\n' });
-                thinkingStarted = false;
-              }
-              callback({ type: 'text', content: part.text });
-            } else if (part.functionCall) {
-              toolCalls.push({
-                id: part.functionCall.id || generateToolCallId(),
-                type: 'function',
-                function: {
-                  name: part.functionCall.name,
-                  arguments: JSON.stringify(part.functionCall.args)
-                }
-              });
-            }
-          }
-        }
-
-        if (data.response?.candidates?.[0]?.finishReason && toolCalls.length > 0) {
-          if (thinkingStarted) {
-            callback({ type: 'thinking', content: '\n</think>\n' });
-            thinkingStarted = false;
-          }
-          callback({ type: 'tool_calls', tool_calls: toolCalls });
-          toolCalls = [];
-        }
-      } catch (e) {
-        // 忽略解析错误
-      }
-    }
-  }
-}
-
-export function closeRequester() {
-  if (requester) {
-    requester.close();
-  }
 }

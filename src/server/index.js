@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateAssistantResponse, getAvailableModels, closeRequester } from '../api/client.js';
+import { generateAssistantResponse, getAvailableModels } from '../api/client.js';
 import { generateRequestBody } from '../utils/utils.js';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
@@ -177,7 +177,6 @@ server.on('error', (error) => {
 
 const shutdown = () => {
   logger.info('正在关闭服务器...');
-  closeRequester();
   server.close(() => {
     logger.info('服务器已关闭');
     process.exit(0);
