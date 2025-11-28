@@ -1,8 +1,14 @@
 import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { generateAssistantResponse, generateAssistantResponseNoStream, getAvailableModels, closeRequester } from '../api/client.js';
 import { generateRequestBody } from '../utils/utils.js';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
+import tokenManager from '../auth/token_manager.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -42,6 +48,9 @@ const endStream = (res, id, created, model, finish_reason) => {
 
 app.use(express.json({ limit: config.security.maxRequestSize }));
 
+// 静态文件服务：提供图片访问
+app.use('/images', express.static(path.join(__dirname, '../../public/images')));
+
 app.use((err, req, res, next) => {
   if (err.type === 'entity.too.large') {
     return res.status(413).json({ error: `请求体过大，最大支持 ${config.security.maxRequestSize}` });
@@ -50,10 +59,12 @@ app.use((err, req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    logger.request(req.method, req.path, res.statusCode, Date.now() - start);
-  });
+  if (!req.path.startsWith('/images' || !req.path.startsWith('/favicon.ico'))) {
+    const start = Date.now();
+    res.on('finish', () => {
+      logger.request(req.method, req.path, res.statusCode, Date.now() - start);
+    });
+  }
   next();
 });
 
@@ -88,9 +99,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     if (!messages) {
       return res.status(400).json({ error: 'messages is required' });
     }
-    
+    const token = await tokenManager.getToken();
+    if (!token) {
+      throw new Error('没有可用的token，请运行 npm run login 获取token');
+    }
     const isImageModel = model.includes('-image');
-    const requestBody = await generateRequestBody(messages, model, params, tools);
+    const requestBody = generateRequestBody(messages, model, params, tools, token);
     if (isImageModel) {
       requestBody.request.generationConfig={
         candidateCount: 1,
@@ -99,7 +113,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         // }
       }
       requestBody.requestType="image_gen";
-      //delete requestBody.request.systemInstruction;
+      requestBody.request.systemInstruction.parts[0].text += "现在你作为绘画模型聚焦于帮助用户生成图片";
       delete requestBody.request.tools;
       delete requestBody.request.toolConfig;
     }
@@ -107,26 +121,26 @@ app.post('/v1/chat/completions', async (req, res) => {
     
     const { id, created } = createResponseMeta();
     
-    if (stream && !isImageModel) {
+    if (stream) {
       setStreamHeaders(res);
-      let hasToolCall = false;
       
-      await generateAssistantResponse(requestBody, (data) => {
-        const delta = data.type === 'tool_calls' 
-          ? { tool_calls: data.tool_calls } 
-          : { content: data.content };
-        if (data.type === 'tool_calls') hasToolCall = true;
-        writeStreamData(res, createStreamChunk(id, created, model, delta));
-      });
-      
-      endStream(res, id, created, model, hasToolCall ? 'tool_calls' : 'stop');
-    } else if (stream && isImageModel) {
-      setStreamHeaders(res);
-      const { content } = await generateAssistantResponseNoStream(requestBody);
-      writeStreamData(res, createStreamChunk(id, created, model, { content }));
-      endStream(res, id, created, model, 'stop');
+      if (isImageModel) {
+        const { content } = await generateAssistantResponseNoStream(requestBody, token);
+        writeStreamData(res, createStreamChunk(id, created, model, { content }));
+        endStream(res, id, created, model, 'stop');
+      } else {
+        let hasToolCall = false;
+        await generateAssistantResponse(requestBody, token, (data) => {
+          const delta = data.type === 'tool_calls' 
+            ? { tool_calls: data.tool_calls } 
+            : { content: data.content };
+          if (data.type === 'tool_calls') hasToolCall = true;
+          writeStreamData(res, createStreamChunk(id, created, model, delta));
+        });
+        endStream(res, id, created, model, hasToolCall ? 'tool_calls' : 'stop');
+      }
     } else {
-      const { content, toolCalls } = await generateAssistantResponseNoStream(requestBody);
+      const { content, toolCalls } = await generateAssistantResponseNoStream(requestBody, token);
       const message = { role: 'assistant', content };
       if (toolCalls.length > 0) message.tool_calls = toolCalls;
       

@@ -114,7 +114,7 @@ class TokenManager {
   }
 
   disableToken(token) {
-    log.warn(`禁用token`)
+    log.warn(`禁用token ...${token.access_token.slice(-8)}`)
     token.enable = false;
     this.saveToFile();
     this.tokens = this.tokens.filter(t => t.refresh_token !== token.refresh_token);
@@ -124,7 +124,10 @@ class TokenManager {
   async getToken() {
     if (this.tokens.length === 0) return null;
 
-    for (let i = 0; i < this.tokens.length; i++) {
+    const startIndex = this.currentIndex;
+    const totalTokens = this.tokens.length;
+
+    for (let i = 0; i < totalTokens; i++) {
       const token = this.tokens[this.currentIndex];
       
       try {
@@ -138,11 +141,11 @@ class TokenManager {
           const accountNum = this.currentIndex + 1;
           log.warn(`账号 ${accountNum}: Token 已失效或错误，已自动禁用该账号`);
           this.disableToken(token);
+          if (this.tokens.length === 0) return null;
         } else {
-          log.error(`Token ${this.currentIndex} 刷新失败:`, error.message);
+          log.error(`Token ${this.currentIndex + 1} 刷新失败:`, error.message);
+          this.currentIndex = (this.currentIndex + 1) % this.tokens.length;
         }
-        this.currentIndex = (this.currentIndex + 1) % this.tokens.length;
-        if (this.tokens.length === 0) return null;
       }
     }
 

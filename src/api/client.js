@@ -3,6 +3,7 @@ import tokenManager from '../auth/token_manager.js';
 import config from '../config/config.js';
 import { generateToolCallId } from '../utils/idGenerator.js';
 import AntigravityRequester from '../AntigravityRequester.js';
+import { saveBase64Image } from '../utils/imageStorage.js';
 
 // 请求客户端：优先使用 AntigravityRequester，失败则降级到 axios
 let requester = null;
@@ -141,9 +142,7 @@ function parseAndEmitStreamChunk(line, state, callback) {
 
 // ==================== 导出函数 ====================
 
-export async function generateAssistantResponse(requestBody, callback) {
-  const token = await tokenManager.getToken();
-  if (!token) throw new Error('没有可用的token，请运行 npm run login 获取token');
+export async function generateAssistantResponse(requestBody, token, callback) {
   
   const headers = buildHeaders(token);
   const state = { thinkingStarted: false, toolCalls: [] };
@@ -221,9 +220,7 @@ export async function getAvailableModels() {
   }
 }
 
-export async function generateAssistantResponseNoStream(requestBody) {
-  const token = await tokenManager.getToken();
-  if (!token) throw new Error('没有可用的token，请运行 npm run login 获取token');
+export async function generateAssistantResponseNoStream(requestBody, token) {
   
   const headers = buildHeaders(token);
   let data;
@@ -248,7 +245,7 @@ export async function generateAssistantResponseNoStream(requestBody) {
   let content = '';
   let thinkingContent = '';
   const toolCalls = [];
-  const imageContents = [];
+  const imageUrls = [];
   
   for (const part of parts) {
     if (part.thought === true) {
@@ -258,10 +255,9 @@ export async function generateAssistantResponseNoStream(requestBody) {
     } else if (part.functionCall) {
       toolCalls.push(convertToToolCall(part.functionCall));
     } else if (part.inlineData) {
-      imageContents.push({
-        type: 'image_url',
-        image_url: { url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }
-      });
+      // 保存图片到本地并获取 URL
+      const imageUrl = saveBase64Image(part.inlineData.data, part.inlineData.mimeType);
+      imageUrls.push(imageUrl);
     }
   }
   
@@ -270,10 +266,10 @@ export async function generateAssistantResponseNoStream(requestBody) {
     content = `<think>\n${thinkingContent}\n</think>\n${content}`;
   }
   
-  // 生图模型：转换为markdown格式
-  if (imageContents.length > 0) {
+  // 生图模型：转换为 markdown 格式
+  if (imageUrls.length > 0) {
     let markdown = content ? content + '\n\n' : '';
-    markdown += imageContents.map(img => `![image](${img.image_url.url})`).join('\n\n');
+    markdown += imageUrls.map(url => `![image](${url})`).join('\n\n');
     return { content: markdown, toolCalls };
   }
   
