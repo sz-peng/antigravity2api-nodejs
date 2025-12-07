@@ -112,25 +112,35 @@ class TokenManager {
       token.access_token = response.data.access_token;
       token.expires_in = response.data.expires_in;
       token.timestamp = Date.now();
-      this.saveToFile();
+      this.saveToFile(token);
       return token;
     } catch (error) {
       throw { statusCode: error.response?.status, message: error.response?.data || error.message };
     }
   }
 
-  saveToFile() {
+  saveToFile(tokenToUpdate = null) {
     try {
       const data = fs.readFileSync(this.filePath, 'utf8');
       const allTokens = JSON.parse(data);
       
-      this.tokens.forEach(memToken => {
-        const index = allTokens.findIndex(t => t.refresh_token === memToken.refresh_token);
+      // 如果指定了要更新的token，直接更新它
+      if (tokenToUpdate) {
+        const index = allTokens.findIndex(t => t.refresh_token === tokenToUpdate.refresh_token);
         if (index !== -1) {
-          const { sessionId, ...tokenToSave } = memToken;
+          const { sessionId, ...tokenToSave } = tokenToUpdate;
           allTokens[index] = tokenToSave;
         }
-      });
+      } else {
+        // 否则更新内存中的所有token
+        this.tokens.forEach(memToken => {
+          const index = allTokens.findIndex(t => t.refresh_token === memToken.refresh_token);
+          if (index !== -1) {
+            const { sessionId, ...tokenToSave } = memToken;
+            allTokens[index] = tokenToSave;
+          }
+        });
+      }
       
       fs.writeFileSync(this.filePath, JSON.stringify(allTokens, null, 2), 'utf8');
     } catch (error) {
@@ -162,7 +172,7 @@ class TokenManager {
         if (!token.projectId) {
           if (config.skipProjectIdFetch) {
             token.projectId = generateProjectId();
-            this.saveToFile();
+            this.saveToFile(token);
             log.info(`...${token.access_token.slice(-8)}: 使用随机生成的projectId: ${token.projectId}`);
           } else {
             try {
@@ -174,7 +184,7 @@ class TokenManager {
                 continue;
               }
               token.projectId = projectId;
-              this.saveToFile();
+              this.saveToFile(token);
             } catch (error) {
               log.error(`...${token.access_token.slice(-8)}: 获取projectId失败:`, error.message);
               this.currentIndex = (this.currentIndex + 1) % this.tokens.length;
@@ -292,6 +302,7 @@ class TokenManager {
       
       return allTokens.map(token => ({
         refresh_token: token.refresh_token,
+        access_token: token.access_token,
         access_token_suffix: token.access_token ? `...${token.access_token.slice(-8)}` : 'N/A',
         expires_in: token.expires_in,
         timestamp: token.timestamp,

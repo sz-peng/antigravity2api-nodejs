@@ -101,6 +101,7 @@ function parseAndEmitStreamChunk(line, state, callback) {
   
   try {
     const data = JSON.parse(line.slice(6));
+    //console.log(JSON.stringify(data));
     const parts = data.response?.candidates?.[0]?.content?.parts;
     
     if (parts) {
@@ -126,14 +127,28 @@ function parseAndEmitStreamChunk(line, state, callback) {
       }
     }
     
-    // 响应结束时发送工具调用
-    if (data.response?.candidates?.[0]?.finishReason && state.toolCalls.length > 0) {
+    // 响应结束时发送工具调用和使用统计
+    if (data.response?.candidates?.[0]?.finishReason) {
       if (state.thinkingStarted) {
         callback({ type: 'thinking', content: '\n</think>\n' });
         state.thinkingStarted = false;
       }
-      callback({ type: 'tool_calls', tool_calls: state.toolCalls });
-      state.toolCalls = [];
+      if (state.toolCalls.length > 0) {
+        callback({ type: 'tool_calls', tool_calls: state.toolCalls });
+        state.toolCalls = [];
+      }
+      // 提取 token 使用统计
+      const usage = data.response?.usageMetadata;
+      if (usage) {
+        callback({ 
+          type: 'usage', 
+          usage: {
+            prompt_tokens: usage.promptTokenCount || 0,
+            completion_tokens: usage.candidatesTokenCount || 0,
+            total_tokens: usage.totalTokenCount || 0
+          }
+        });
+      }
     }
   } catch (e) {
     // 忽略 JSON 解析错误
@@ -205,6 +220,7 @@ export async function getAvailableModels() {
       }
       data = await response.json();
     }
+    //console.log(JSON.stringify(data,null,2));
     const modelList = Object.keys(data.models).map(id => ({
         id,
         object: 'model',
@@ -222,6 +238,38 @@ export async function getAvailableModels() {
       object: 'list',
       data: modelList
     };
+  } catch (error) {
+    await handleApiError(error, token);
+  }
+}
+
+export async function getModelsWithQuotas(token) {
+  const headers = buildHeaders(token);
+  
+  try {
+    let data;
+    if (useAxios) {
+      data = (await axios(buildAxiosConfig(config.api.modelsUrl, headers, {}))).data;
+    } else {
+      const response = await requester.antigravity_fetch(config.api.modelsUrl, buildRequesterConfig(headers, {}));
+      if (response.status !== 200) {
+        const errorBody = await response.text();
+        throw { status: response.status, message: errorBody };
+      }
+      data = await response.json();
+    }
+    
+    const quotas = {};
+    Object.entries(data.models || {}).forEach(([modelId, modelData]) => {
+      if (modelData.quotaInfo) {
+        quotas[modelId] = {
+          r: modelData.quotaInfo.remainingFraction,
+          t: modelData.quotaInfo.resetTime
+        };
+      }
+    });
+    
+    return quotas;
   } catch (error) {
     await handleApiError(error, token);
   }
@@ -246,7 +294,7 @@ export async function generateAssistantResponseNoStream(requestBody, token) {
   } catch (error) {
     await handleApiError(error, token);
   }
-  
+  //console.log(JSON.stringify(data));
   // 解析响应内容
   const parts = data.response?.candidates?.[0]?.content?.parts || [];
   let content = '';
@@ -273,14 +321,22 @@ export async function generateAssistantResponseNoStream(requestBody, token) {
     content = `<think>\n${thinkingContent}\n</think>\n${content}`;
   }
   
+  // 提取 token 使用统计
+  const usage = data.response?.usageMetadata;
+  const usageData = usage ? {
+    prompt_tokens: usage.promptTokenCount || 0,
+    completion_tokens: usage.candidatesTokenCount || 0,
+    total_tokens: usage.totalTokenCount || 0
+  } : null;
+  
   // 生图模型：转换为 markdown 格式
   if (imageUrls.length > 0) {
     let markdown = content ? content + '\n\n' : '';
     markdown += imageUrls.map(url => `![image](${url})`).join('\n\n');
-    return { content: markdown, toolCalls };
+    return { content: markdown, toolCalls, usage: usageData };
   }
   
-  return { content, toolCalls };
+  return { content, toolCalls, usage: usageData };
 }
 
 export function closeRequester() {

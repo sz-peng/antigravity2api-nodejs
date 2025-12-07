@@ -79,6 +79,7 @@ npm start
   - 手动填入：直接输入 Access Token 和 Refresh Token
 - 🎯 **Token 管理**：
   - 查看所有 Token 的详细信息（Access Token 后缀、Project ID、过期时间）
+  - 📊 查看模型额度：按类型分组显示（Claude/Gemini/其他），实时查看剩余额度和重置时间
   - 一键启用/禁用 Token
   - 删除无效 Token
   - 实时刷新 Token 列表
@@ -109,6 +110,11 @@ npm start
 
 3. **管理 Token**
    - 查看 Token 卡片显示的状态和信息
+   - 点击「📊 查看额度」按钮查看该账号的模型额度信息
+     - 自动按模型类型分组（Claude/Gemini/其他）
+     - 显示剩余额度百分比和进度条
+     - 显示额度重置时间（北京时间）
+     - 支持「立即刷新」强制更新额度数据
    - 使用「启用/禁用」按钮控制 Token 状态
    - 使用「删除」按钮移除无效 Token
    - 点击「刷新」按钮更新列表

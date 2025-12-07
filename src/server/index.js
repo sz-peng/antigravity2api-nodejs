@@ -41,8 +41,7 @@ const writeStreamData = (res, data) => {
 };
 
 // 工具函数：结束流式响应
-const endStream = (res, id, created, model, finish_reason) => {
-  writeStreamData(res, createStreamChunk(id, created, model, {}, finish_reason));
+const endStream = (res) => {
   res.write('data: [DONE]\n\n');
   res.end();
 };
@@ -134,22 +133,29 @@ app.post('/v1/chat/completions', async (req, res) => {
       setStreamHeaders(res);
       
       if (isImageModel) {
-        const { content } = await generateAssistantResponseNoStream(requestBody, token);
+        const { content, usage } = await generateAssistantResponseNoStream(requestBody, token);
         writeStreamData(res, createStreamChunk(id, created, model, { content }));
-        endStream(res, id, created, model, 'stop');
+        writeStreamData(res, { ...createStreamChunk(id, created, model, {}, 'stop'), usage });
+        endStream(res);
       } else {
         let hasToolCall = false;
+        let usageData = null;
         await generateAssistantResponse(requestBody, token, (data) => {
-          const delta = data.type === 'tool_calls' 
-            ? { tool_calls: data.tool_calls } 
-            : { content: data.content };
-          if (data.type === 'tool_calls') hasToolCall = true;
-          writeStreamData(res, createStreamChunk(id, created, model, delta));
+          if (data.type === 'usage') {
+            usageData = data.usage;
+          } else {
+            const delta = data.type === 'tool_calls' 
+              ? { tool_calls: data.tool_calls } 
+              : { content: data.content };
+            if (data.type === 'tool_calls') hasToolCall = true;
+            writeStreamData(res, createStreamChunk(id, created, model, delta));
+          }
         });
-        endStream(res, id, created, model, hasToolCall ? 'tool_calls' : 'stop');
+        writeStreamData(res, { ...createStreamChunk(id, created, model, {}, hasToolCall ? 'tool_calls' : 'stop'), usage: usageData });
+        endStream(res);
       }
     } else {
-      const { content, toolCalls } = await generateAssistantResponseNoStream(requestBody, token);
+      const { content, toolCalls, usage } = await generateAssistantResponseNoStream(requestBody, token);
       const message = { role: 'assistant', content };
       if (toolCalls.length > 0) message.tool_calls = toolCalls;
       
@@ -162,7 +168,8 @@ app.post('/v1/chat/completions', async (req, res) => {
           index: 0,
           message,
           finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
-        }]
+        }],
+        usage
       });
     }
   } catch (error) {
@@ -174,7 +181,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       if (stream) {
         setStreamHeaders(res);
         writeStreamData(res, createStreamChunk(id, created, model, { content: errorContent }));
-        endStream(res, id, created, model, 'stop');
+        writeStreamData(res, createStreamChunk(id, created, model, {}, 'stop'));
+        endStream(res);
       } else {
         res.json({
           id,

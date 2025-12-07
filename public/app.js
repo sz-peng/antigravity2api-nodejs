@@ -353,6 +353,7 @@ function renderTokens(tokens) {
                 </div>
             </div>
             <div class="token-actions">
+                <button class="btn btn-info" onclick="showQuotaModal('${token.refresh_token}')">📊 查看额度</button>
                 <button class="btn ${token.enable ? 'btn-warning' : 'btn-success'}" onclick="toggleToken('${token.refresh_token}', ${!token.enable})">
                     ${token.enable ? '⏸️ 禁用' : '▶️ 启用'}
                 </button>
@@ -415,6 +416,146 @@ async function deleteToken(refreshToken) {
         hideLoading();
         showToast('删除失败: ' + error.message, 'error');
     }
+}
+
+async function showQuotaModal(refreshToken) {
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-title">📊 模型额度信息</div>
+            <div id="quotaContent" style="max-height: 60vh; overflow-y: auto;">
+                <div class="quota-loading">加载中...</div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-info" onclick="refreshQuotaData('${refreshToken}')">🔄 立即刷新</button>
+                <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">关闭</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    
+    await loadQuotaData(refreshToken);
+}
+
+async function loadQuotaData(refreshToken, forceRefresh = false) {
+    const quotaContent = document.getElementById('quotaContent');
+    if (!quotaContent) return;
+    
+    const refreshBtn = document.querySelector('.modal-content .btn-info');
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '⏳ 加载中...';
+    }
+    
+    quotaContent.innerHTML = '<div class="quota-loading">加载中...</div>';
+    
+    try {
+        const url = `/admin/tokens/${encodeURIComponent(refreshToken)}/quotas${forceRefresh ? '?refresh=true' : ''}`;
+        const response = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            const quotaData = data.data;
+            const models = quotaData.models;
+            
+            if (Object.keys(models).length === 0) {
+                quotaContent.innerHTML = '<div class="quota-empty">暂无额度信息</div>';
+                return;
+            }
+            
+            const lastUpdated = new Date(quotaData.lastUpdated).toLocaleString('zh-CN', {
+                month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+            });
+            
+            // 按模型类型分组
+            const grouped = { claude: [], gemini: [], other: [] };
+            Object.entries(models).forEach(([modelId, quota]) => {
+                const item = { modelId, quota };
+                if (modelId.toLowerCase().includes('claude')) grouped.claude.push(item);
+                else if (modelId.toLowerCase().includes('gemini')) grouped.gemini.push(item);
+                else grouped.other.push(item);
+            });
+            
+            let html = `<div class="quota-header">更新于 ${lastUpdated}</div>`;
+            
+            // 渲染各组
+            if (grouped.claude.length > 0) {
+                html += '<div class="quota-group-title">🤖 Claude 模型</div>';
+                grouped.claude.forEach(({ modelId, quota }) => {
+                    const percentage = (quota.remaining * 100).toFixed(1);
+                    const barColor = percentage > 50 ? '#10b981' : percentage > 20 ? '#f59e0b' : '#ef4444';
+                    html += `
+                        <div class="quota-item">
+                            <div class="quota-model-name">${modelId}</div>
+                            <div class="quota-bar-container">
+                                <div class="quota-bar" style="width: ${percentage}%; background: ${barColor};"></div>
+                                <span class="quota-percentage">${percentage}%</span>
+                            </div>
+                            <div class="quota-reset">🔄 重置: ${quota.resetTime}</div>
+                        </div>
+                    `;
+                });
+            }
+            
+            if (grouped.gemini.length > 0) {
+                html += '<div class="quota-group-title">💎 Gemini 模型</div>';
+                grouped.gemini.forEach(({ modelId, quota }) => {
+                    const percentage = (quota.remaining * 100).toFixed(1);
+                    const barColor = percentage > 50 ? '#10b981' : percentage > 20 ? '#f59e0b' : '#ef4444';
+                    html += `
+                        <div class="quota-item">
+                            <div class="quota-model-name">${modelId}</div>
+                            <div class="quota-bar-container">
+                                <div class="quota-bar" style="width: ${percentage}%; background: ${barColor};"></div>
+                                <span class="quota-percentage">${percentage}%</span>
+                            </div>
+                            <div class="quota-reset">🔄 重置: ${quota.resetTime}</div>
+                        </div>
+                    `;
+                });
+            }
+            
+            if (grouped.other.length > 0) {
+                html += '<div class="quota-group-title">🔧 其他模型</div>';
+                grouped.other.forEach(({ modelId, quota }) => {
+                    const percentage = (quota.remaining * 100).toFixed(1);
+                    const barColor = percentage > 50 ? '#10b981' : percentage > 20 ? '#f59e0b' : '#ef4444';
+                    html += `
+                        <div class="quota-item">
+                            <div class="quota-model-name">${modelId}</div>
+                            <div class="quota-bar-container">
+                                <div class="quota-bar" style="width: ${percentage}%; background: ${barColor};"></div>
+                                <span class="quota-percentage">${percentage}%</span>
+                            </div>
+                            <div class="quota-reset">🔄 重置: ${quota.resetTime}</div>
+                        </div>
+                    `;
+                });
+            }
+            
+            quotaContent.innerHTML = html;
+        } else {
+            quotaContent.innerHTML = `<div class="quota-error">加载失败: ${data.message}</div>`;
+        }
+    } catch (error) {
+        if (quotaContent) {
+            quotaContent.innerHTML = `<div class="quota-error">加载失败: ${error.message}</div>`;
+        }
+    } finally {
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = '🔄 立即刷新';
+        }
+    }
+}
+
+async function refreshQuotaData(refreshToken) {
+    await loadQuotaData(refreshToken, true);
 }
 
 async function loadConfig() {

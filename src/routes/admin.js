@@ -1,6 +1,7 @@
 import express from 'express';
 import { generateToken, authMiddleware } from '../auth/jwt.js';
 import tokenManager from '../auth/token_manager.js';
+import quotaManager from '../auth/quota_manager.js';
 import config, { getConfigJson, saveConfigJson } from '../config/config.js';
 import logger from '../utils/logger.js';
 import { generateProjectId } from '../utils/idGenerator.js';
@@ -8,6 +9,7 @@ import { parseEnvFile, updateEnvFile } from '../utils/envParser.js';
 import { reloadConfig } from '../utils/configReloader.js';
 import { OAUTH_CONFIG } from '../constants/oauth.js';
 import { deepMerge } from '../utils/deepMerge.js';
+import { getModelsWithQuotas } from '../api/client.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -166,6 +168,62 @@ router.put('/config', authMiddleware, (req, res) => {
     res.json({ success: true, message: '配置已保存并生效（端口/HOST修改需重启）' });
   } catch (error) {
     logger.error('更新配置失败:', error.message);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 获取指定Token的模型额度
+router.get('/tokens/:refreshToken/quotas', authMiddleware, async (req, res) => {
+  try {
+    const { refreshToken } = req.params;
+    const forceRefresh = req.query.refresh === 'true';
+    const tokens = tokenManager.getTokenList();
+    let tokenData = tokens.find(t => t.refresh_token === refreshToken);
+    
+    if (!tokenData) {
+      return res.status(404).json({ success: false, message: 'Token不存在' });
+    }
+    
+    // 检查token是否过期，如果过期则刷新
+    if (tokenManager.isExpired(tokenData)) {
+      try {
+        tokenData = await tokenManager.refreshToken(tokenData);
+      } catch (error) {
+        logger.error('刷新token失败:', error.message);
+        return res.status(401).json({ success: false, message: 'Token已过期且刷新失败' });
+      }
+    }
+    
+    // 先从缓存获取（除非强制刷新）
+    let quotaData = forceRefresh ? null : quotaManager.getQuota(refreshToken);
+    
+    if (!quotaData) {
+      // 缓存未命中或强制刷新，从API获取
+      const token = { access_token: tokenData.access_token, refresh_token: refreshToken };
+      const quotas = await getModelsWithQuotas(token);
+      quotaManager.updateQuota(refreshToken, quotas);
+      quotaData = { lastUpdated: Date.now(), models: quotas };
+    }
+    
+    // 转换时间为北京时间
+    const modelsWithBeijingTime = {};
+    Object.entries(quotaData.models).forEach(([modelId, quota]) => {
+      modelsWithBeijingTime[modelId] = {
+        remaining: quota.r,
+        resetTime: quotaManager.convertToBeijingTime(quota.t),
+        resetTimeRaw: quota.t
+      };
+    });
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        lastUpdated: quotaData.lastUpdated,
+        models: modelsWithBeijingTime 
+      } 
+    });
+  } catch (error) {
+    logger.error('获取额度失败:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 });

@@ -69,7 +69,7 @@ function handleAssistantMessage(message, antigravityMessages){
     lastMessage.parts.push(...antigravityTools)
   }else{
     const parts = [];
-    if (hasContent) parts.push({ text: message.content });
+    if (hasContent) parts.push({ text: message.content.trimEnd() });
     parts.push(...antigravityTools);
     
     antigravityMessages.push({
