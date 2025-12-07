@@ -6,6 +6,7 @@ import { generateRequestBody } from '../utils/utils.js';
 import logger from '../utils/logger.js';
 import config from '../config/config.js';
 import tokenManager from '../auth/token_manager.js';
+import adminRouter from '../routes/admin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,8 +49,12 @@ const endStream = (res, id, created, model, finish_reason) => {
 
 app.use(express.json({ limit: config.security.maxRequestSize }));
 
-// 静态文件服务：提供图片访问
+// 静态文件服务
 app.use('/images', express.static(path.join(__dirname, '../../public/images')));
+app.use(express.static(path.join(__dirname, '../../public')));
+
+// 管理路由
+app.use('/admin', adminRouter);
 
 app.use((err, req, res, next) => {
   if (err.type === 'entity.too.large') {
@@ -59,7 +64,8 @@ app.use((err, req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  if (!req.path.startsWith('/images' || !req.path.startsWith('/favicon.ico'))) {
+  const ignorePaths = ['/images', '/favicon.ico', '/.well-known'];
+  if (!ignorePaths.some(path => req.path.startsWith(path))) {
     const start = Date.now();
     res.on('finish', () => {
       logger.request(req.method, req.path, res.statusCode, Date.now() - start);
@@ -93,8 +99,10 @@ app.get('/v1/models', async (req, res) => {
   }
 });
 
+
+
 app.post('/v1/chat/completions', async (req, res) => {
-  const { messages, model, stream = true, tools, ...params} = req.body;
+  const { messages, model, stream = false, tools, ...params} = req.body;
   try {
     if (!messages) {
       return res.status(400).json({ error: 'messages is required' });
@@ -113,7 +121,8 @@ app.post('/v1/chat/completions', async (req, res) => {
         // }
       }
       requestBody.requestType="image_gen";
-      requestBody.request.systemInstruction.parts[0].text += "现在你作为绘画模型聚焦于帮助用户生成图片";
+      //requestBody.request.systemInstruction.parts[0].text += "现在你作为绘画模型聚焦于帮助用户生成图片";
+      delete requestBody.request.systemInstruction;
       delete requestBody.request.tools;
       delete requestBody.request.toolConfig;
     }

@@ -17,7 +17,19 @@ class TokenManager {
     this.filePath = filePath;
     this.tokens = [];
     this.currentIndex = 0;
+    this.ensureFileExists();
     this.initialize();
+  }
+
+  ensureFileExists() {
+    const dir = path.dirname(this.filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    if (!fs.existsSync(this.filePath)) {
+      fs.writeFileSync(this.filePath, '[]', 'utf8');
+      log.info('✓ 已创建账号配置文件');
+    }
   }
 
   async initialize() {
@@ -32,7 +44,13 @@ class TokenManager {
       }));
       
       this.currentIndex = 0;
-      log.info(`成功加载 ${this.tokens.length} 个可用token`);
+      if (this.tokens.length === 0) {
+        log.warn('⚠ 暂无可用账号，请使用以下方式添加：');
+        log.warn('  方式1: 运行 npm run login 命令登录');
+        log.warn('  方式2: 访问前端管理页面添加账号');
+      } else {
+        log.info(`成功加载 ${this.tokens.length} 个可用token`);
+      }
     } catch (error) {
       log.error('初始化token失败:', error.message);
       this.tokens = [];
@@ -187,6 +205,104 @@ class TokenManager {
     const found = this.tokens.find(t => t.access_token === token.access_token);
     if (found) {
       this.disableToken(found);
+    }
+  }
+
+  // API管理方法
+  async reload() {
+    await this.initialize();
+    log.info('Token已热重载');
+  }
+
+  addToken(tokenData) {
+    try {
+      this.ensureFileExists();
+      const data = fs.readFileSync(this.filePath, 'utf8');
+      const allTokens = JSON.parse(data);
+      
+      const newToken = {
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_in: tokenData.expires_in || 3599,
+        timestamp: tokenData.timestamp || Date.now(),
+        enable: tokenData.enable !== undefined ? tokenData.enable : true
+      };
+      
+      if (tokenData.projectId) {
+        newToken.projectId = tokenData.projectId;
+      }
+      
+      allTokens.push(newToken);
+      fs.writeFileSync(this.filePath, JSON.stringify(allTokens, null, 2), 'utf8');
+      
+      this.reload();
+      return { success: true, message: 'Token添加成功' };
+    } catch (error) {
+      log.error('添加Token失败:', error.message);
+      return { success: false, message: error.message };
+    }
+  }
+
+  updateToken(refreshToken, updates) {
+    try {
+      this.ensureFileExists();
+      const data = fs.readFileSync(this.filePath, 'utf8');
+      const allTokens = JSON.parse(data);
+      
+      const index = allTokens.findIndex(t => t.refresh_token === refreshToken);
+      if (index === -1) {
+        return { success: false, message: 'Token不存在' };
+      }
+      
+      allTokens[index] = { ...allTokens[index], ...updates };
+      fs.writeFileSync(this.filePath, JSON.stringify(allTokens, null, 2), 'utf8');
+      
+      this.reload();
+      return { success: true, message: 'Token更新成功' };
+    } catch (error) {
+      log.error('更新Token失败:', error.message);
+      return { success: false, message: error.message };
+    }
+  }
+
+  deleteToken(refreshToken) {
+    try {
+      this.ensureFileExists();
+      const data = fs.readFileSync(this.filePath, 'utf8');
+      const allTokens = JSON.parse(data);
+      
+      const filteredTokens = allTokens.filter(t => t.refresh_token !== refreshToken);
+      if (filteredTokens.length === allTokens.length) {
+        return { success: false, message: 'Token不存在' };
+      }
+      
+      fs.writeFileSync(this.filePath, JSON.stringify(filteredTokens, null, 2), 'utf8');
+      
+      this.reload();
+      return { success: true, message: 'Token删除成功' };
+    } catch (error) {
+      log.error('删除Token失败:', error.message);
+      return { success: false, message: error.message };
+    }
+  }
+
+  getTokenList() {
+    try {
+      this.ensureFileExists();
+      const data = fs.readFileSync(this.filePath, 'utf8');
+      const allTokens = JSON.parse(data);
+      
+      return allTokens.map(token => ({
+        refresh_token: token.refresh_token,
+        access_token_suffix: token.access_token ? `...${token.access_token.slice(-8)}` : 'N/A',
+        expires_in: token.expires_in,
+        timestamp: token.timestamp,
+        enable: token.enable !== false,
+        projectId: token.projectId || null
+      }));
+    } catch (error) {
+      log.error('获取Token列表失败:', error.message);
+      return [];
     }
   }
 }
