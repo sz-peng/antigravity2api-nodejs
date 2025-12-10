@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { generateAssistantResponse, generateAssistantResponseNoStream, getAvailableModels, generateImageForSD, closeRequester } from '../api/client.js';
@@ -47,6 +48,7 @@ const endStream = (res) => {
   res.end();
 };
 
+app.use(cors());
 app.use(express.json({ limit: config.security.maxRequestSize }));
 
 // 静态文件服务
